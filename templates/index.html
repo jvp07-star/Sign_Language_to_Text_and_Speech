@@ -1,34 +1,242 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Sign Language Translator</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Language to Text and Speech</title>
+    <style>
+        :root {
+            --bg-color: #121214;
+            --card-bg: #1c1c1e;
+            --accent-color: #007aff;
+            --text-main: #ffffff;
+            --text-muted: #a1a1a6;
+            --border-color: #2c2c2e;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 24px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 24px;
+            max-width: 1100px;
+            width: 100%;
+        }
+
+        @media (min-width: 768px) {
+            .main-container {
+                grid-template-columns: 1.2fr 1fr;
+            }
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+        }
+
+        .video-wrapper {
+            width: 100%;
+            aspect-ratio: 4/3;
+            background-color: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror view alignment */
+        }
+
+        .translation-container {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .lang-box {
+            background: #262629;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+            position: relative;
+        }
+
+        .lang-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            font-weight: 700;
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+
+        .output-text {
+            font-size: 1.4rem;
+            font-weight: 500;
+            min-height: 32px;
+            margin: 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .speak-btn {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .speak-btn:hover {
+            background-color: #0063cc;
+        }
+
+        .speak-btn svg {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
+    </style>
 </head>
-<body style="text-align: center; font-family: sans-serif;">
+<body>
+
     <h1>Sign Language Translator</h1>
-    <img src="{{ url_for('video_feed') }}" width="640" height="480" style="border: 3px solid #333;">
-    
-    <div style="margin-top: 20px;">
-        <h3>English: <span id="en">...</span></h3>
-        <h3>Hindi: <span id="hi">...</span></h3>
-        <h3>Kannada: <span id="kn">...</span></h3>
-        <button onclick="speak('en')">🔊 EN</button>
-        <button onclick="speak('hi')">🔊 HI</button>
-        <button onclick="speak('kn')">🔊 KN</button>
+
+    <div class="main-container">
+        <div class="card">
+            <div class="video-wrapper">
+                <video id="webcam" autoplay playsinline></video>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="translation-container">
+                
+                <div class="lang-box">
+                    <div class="lang-label">English</div>
+                    <p class="output-text" id="english-text">Scanning...</p>
+                    <button class="speak-btn" onclick="speakText('english-text', 'en')">
+                        <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                    </button>
+                </div>
+
+                <div class="lang-box">
+                    <div class="lang-label">Hindi (हिंदी)</div>
+                    <p class="output-text" id="hindi-text">...</p>
+                    <button class="speak-btn" onclick="speakText('hindi-text', 'hi')">
+                        <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                    </button>
+                </div>
+
+                <div class="lang-box">
+                    <div class="lang-label">Kannada (ಕನ್ನಡ)</div>
+                    <p class="output-text" id="kannada-text">...</p>
+                    <button class="speak-btn" onclick="speakText('kannada-text', 'kn')">
+                        <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                    </button>
+                </div>
+
+            </div>
+        </div>
     </div>
 
     <script>
-        setInterval(async () => {
-            const res = await fetch('/get_data');
-            const data = await res.json();
-            document.getElementById('en').innerText = data.en;
-            document.getElementById('hi').innerText = data.hi;
-            document.getElementById('kn').innerText = data.kn;
-        }, 1000);
+        const video = document.getElementById('webcam');
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
 
-        function speak(lang) {
-            const text = document.getElementById(lang).innerText;
-            const msg = new SpeechSynthesisUtterance(text);
-            window.speechSynthesis.speak(msg);
+        // Request browser webcam layout permissions
+        navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+            .then(stream => {
+                video.srcObject = stream;
+                // Capture frame slice every 350ms to feed the prediction loop pipeline
+                setInterval(sendFrameToServer, 350);
+            })
+            .catch(err => {
+                alert("Please enable camera access permissions in Safari settings.");
+                console.error("Camera connection error: ", err);
+            });
+
+        function sendFrameToServer() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                
+                // Draw current snapshot vector 
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const base64Image = canvas.toDataURL('image/jpeg', 0.5);
+
+                fetch('/process_frame', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: base64Image })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('english-text').innerText = data.english;
+                    document.getElementById('hindi-text').innerText = data.hindi;
+                    document.getElementById('kannada-text').innerText = data.kannada;
+                })
+                .catch(err => console.error("Data pipe sync error:", err));
+            }
+        }
+
+        function speakText(elementId, languageCode) {
+            const stringText = document.getElementById(elementId).innerText;
+            if (!stringText || stringText === "Scanning..." || stringText === "...") return;
+
+            fetch('/speak', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: stringText, lang: languageCode })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    // Play the audio generated dynamically by the backend
+                    const audio = new Audio(data.audio_url + '?t=' + new Date().getTime());
+                    audio.play();
+                }
+            })
+            .catch(err => console.error("Audio generation engine error:", err));
         }
     </script>
 </body>
