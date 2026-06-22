@@ -1,130 +1,252 @@
-import os
 import cv2
+import mediapipe as mp
 import numpy as np
+import os
+
+import request
 import tensorflow as tf
-from flask import Flask, render_template, request, jsonify
+import threading
+import time
+import atexit
+import pyttsx3
+from spellchecker import SpellChecker
 from deep_translator import GoogleTranslator
 from gtts import gTTS
-import base64
+from flask import Flask, render_template, Response, jsonify
 
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-
-# Initialize MediaPipe Tasks Engine
-TASK_FILE = "hand_landmarker.task"
-base_options = python.BaseOptions(model_asset_path=TASK_FILE)
-options = vision.HandLandmarkerOptions(
-    base_options=base_options,
-    running_mode=vision.RunningMode.IMAGE, # Changed to single image mode for browser packets
-    num_hands=1
-)
-detector = vision.HandLandmarker.create_from_options(options)
-
-try:
-    import processor
-except ImportError:
-    processor = None
+from processor import get_hand_skeleton
 
 app = Flask(__name__)
 
-MODEL_PATH = "isl_skeleton_model.h5"
-LABELS = ["Hello", "Thank You", "Yes", "No", "A", "B", "C"]
+# --- Configuration & Paths ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "isl_skeleton_model.h5")
+TASK_ASSET_PATH = os.path.join(BASE_DIR, "hand_landmarker.task")
+LABELS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
-if os.path.exists(MODEL_PATH):
+CONFIDENCE_THRESHOLD = 0.80
+HOLD_DURATION = 1.5
+SPACE_DURATION = 2.5
+
+# --- Core Engines Initialization ---
+model = tf.keras.models.load_model(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+spell = SpellChecker()
+
+# Engine for English offline speech
+engine = pyttsx3.init()
+engine.setProperty('rate', 145)
+engine_lock = threading.Lock()
+
+# --- Global Tracking States ---
+predicted_letter = "Searching..."
+current_word = ""
+final_sentence = []
+
+# Translation Buffers (Only update when sentence pieces change)
+hindi_translation = ""
+kannada_translation = ""
+
+# Time Keeping variables for Debouncer
+tracking_letter = ""
+letter_start_time = None
+hand_absent_start_time = None
+cooldown_until = 0.0
+
+
+class VideoCamera:
+    def __init__(self):
+        self.video = cv2.VideoCapture(0)
+        if not self.video.isOpened():
+            print("CRITICAL: Camera failed to open!")
+        self.frame = None
+        self.lock = threading.Lock()
+        self.running = True
+        threading.Thread(target=self.update, daemon=True).start()
+
+    def update(self):
+        while self.running:
+            ret, frame = self.video.read()
+            if ret:
+                frame = cv2.flip(frame, 1)  # Mirror mode
+                with self.lock:
+                    self.frame = frame.copy()
+            time.sleep(0.02)
+
+    def release(self):
+        self.running = False
+        if self.video.isOpened():
+            self.video.release()
+
+
+cam = VideoCamera()
+
+
+def speak_indic_worker(text, lang_code):
+    """Safely plays audio on a background worker thread."""
     try:
-        model = tf.keras.models.load_model(MODEL_PATH)
-        print("[+] Model loaded successfully!")
+        tts = gTTS(text=text, lang=lang_code, slow=False)
+        temp_file = f"temp_{lang_code}.mp3"
+        tts.save(temp_file)
+        if os.name == 'nt':
+            os.system(f'start /min "" "{temp_file}"')
+        else:
+            os.system(f'afplay "{temp_file}" &' if os.uname().sysname == 'Darwin' else f'mpg123 "{temp_file}" &')
     except Exception as e:
-        print(f"[-] Error loading model: {e}")
-        model = None
-else:
-    model = None
+        print(f"Voice Synthesis Error: {e}")
+
+
+def run_tts_english(text):
+    with engine_lock:
+        engine.say(text)
+        engine.runAndWait()
+
+
+def trigger_sentence_translation():
+    """Triggered dynamically only when words are committed into full sentence arrays."""
+    global final_sentence, hindi_translation, kannada_translation
+    sentence_str = " ".join(final_sentence)
+    if sentence_str.strip() == "":
+        hindi_translation = ""
+        kannada_translation = ""
+        return
+
+    try:
+        hindi_translation = GoogleTranslator(source='en', target='hi').translate(sentence_str)
+        kannada_translation = GoogleTranslator(source='en', target='kn').translate(sentence_str)
+    except Exception as e:
+        print(f"Translation Failure: {e}")
+
+
+def gen_frames():
+    global predicted_letter, current_word, final_sentence
+    global tracking_letter, letter_start_time, hand_absent_start_time, cooldown_until
+
+    options = mp.tasks.vision.HandLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=TASK_ASSET_PATH),
+        running_mode=mp.tasks.vision.RunningMode.VIDEO, num_hands=1
+    )
+
+    with mp.tasks.vision.HandLandmarker.create_from_options(options) as landmarker:
+        while True:
+            frame = cam.frame
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            current_time = time.time()
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            results = landmarker.detect_for_video(mp_image, int(current_time * 1000))
+
+            if results.hand_landmarks and model:
+                hand_absent_start_time = None
+                raw_landmarks = results.hand_landmarks[0]
+
+                # Render skeleton structures and return 300x300 bounding box segment
+                skeleton = get_hand_skeleton(frame, raw_landmarks)
+
+                # Classify gesture frame
+                pred = model.predict(np.expand_dims(skeleton, axis=0), verbose=0)
+                prob_distribution = pred[0]
+                max_idx = np.argmax(prob_distribution)
+
+                if prob_distribution[max_idx] > CONFIDENCE_THRESHOLD:
+                    predicted_letter = LABELS[max_idx]
+                else:
+                    predicted_letter = "Uncertain"
+
+                # Word Assembly State Debouncer
+                if predicted_letter not in ["Uncertain", "No Hand Detected"] and current_time > cooldown_until:
+                    if predicted_letter == tracking_letter:
+                        elapsed = current_time - letter_start_time
+                        progress_w = int((elapsed / HOLD_DURATION) * 200)
+
+                        # UI Feedback Bar for user visual processing lock
+                        cv2.rectangle(frame, (50, 130), (50 + min(progress_w, 200), 145), (0, 255, 0), -1)
+
+                        if elapsed >= HOLD_DURATION:
+                            current_word += predicted_letter
+                            cooldown_until = current_time + 1.2
+                            tracking_letter = ""
+                            letter_start_time = None
+                    else:
+                        tracking_letter = predicted_letter
+                        letter_start_time = current_time
+                else:
+                    if current_time <= cooldown_until:
+                        cv2.putText(frame, "Switching...", (50, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+            else:
+                predicted_letter = "No Hand Detected"
+                tracking_letter = ""
+                letter_start_time = None
+
+                # Process sentence space delay calculation
+                if current_word != "":
+                    if hand_absent_start_time is None:
+                        hand_absent_start_time = current_time
+                    elif current_time - hand_absent_start_time >= SPACE_DURATION:
+                        raw_word = current_word.lower()
+                        corrected_word = spell.correction(raw_word) or raw_word
+                        corrected_word = corrected_word.upper()
+
+                        final_sentence.append(corrected_word)
+                        current_word = ""
+                        hand_absent_start_time = None
+
+                        # Trigger background translation automatically after sentence changes
+                        threading.Thread(target=trigger_sentence_translation, daemon=True).start()
+
+            # Render Heads-Up-Display straight onto stream
+            cv2.putText(frame, f"Live: {predicted_letter}", (50, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+            cv2.putText(frame, f"Word: {current_word}", (50, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+            _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# --- New endpoint that processes video frames directly from Safari ---
-@app.route('/process_frame', methods=['POST'])
-def process_browser_frame():
-    if model is None:
-        return jsonify({'english': 'No Model', 'hindi': '...', 'kannada': '...'})
-        
-    try:
-        data = request.json or {}
-        image_data = data.get('image', '')
-        if not image_data:
-            return jsonify({'english': 'Scanning...', 'hindi': '...', 'kannada': '...'})
-            
-        # Decode base64 image sent by Safari
-        encoded_data = image_data.split(',')[1]
-        nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        frame = cv2.flip(frame, 1)
-        
-        h, w, _ = frame.shape
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        
-        # Detect landmarks using the modern Tasks API
-        result = detector.detect(mp_image)
-        en_text = "Scanning..."
-        
-        if result.hand_landmarks:
-            landmarks = result.hand_landmarks[0]
-            points = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
-            
-            # Build skeleton image
-            hand_img = np.zeros((h, w, 3), dtype=np.uint8)
-            for start, end in processor.HAND_CONNECTIONS:
-                if start < len(points) and end < len(points):
-                    cv2.line(hand_img, points[start], points[end], (0, 255, 0), 2)
-            for pt in points:
-                cv2.circle(hand_img, pt, 2, (255, 255, 255), -1)
-                
-            x_coords = [p[0] for p in points]
-            y_coords = [p[1] for p in points]
-            padding = 20
-            x_min, x_max = max(0, min(x_coords) - padding), min(w, max(x_coords) + padding)
-            y_min, y_max = max(0, min(y_coords) - padding), min(h, max(y_coords) + padding)
-            
-            cropped = hand_img[y_min:y_max, x_min:x_max]
-            if cropped.size > 0:
-                resized = cv2.resize(cropped, (300, 300))
-                img_array = np.expand_dims(resized, axis=0) / 255.0
-                predictions = model.predict(img_array, verbose=0)
-                max_index = np.argmax(predictions[0])
-                if predictions[0][max_index] > 0.50:
-                    en_text = LABELS[max_index]
+@app.route('/video_feed')
+def video_feed():
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-        # Translate outputs
-        hi_text = "..."
-        kn_text = "..."
-        if en_text != "Scanning...":
-            try:
-                hi_text = GoogleTranslator(source='en', target='hi').translate(en_text)
-                kn_text = GoogleTranslator(source='en', target='kn').translate(en_text)
-            except Exception:
-                pass
-                
-        return jsonify({'english': en_text, 'hindi': hi_text, 'kannada': kn_text})
-    except Exception as e:
-        return jsonify({'english': 'Error', 'hindi': str(e), 'kannada': '...'})
+@app.route('/get_data')
+def get_data():
+    return jsonify({
+        'live': predicted_letter,
+        'word': current_word,
+        'en': " ".join(final_sentence),
+        'hi': hindi_translation,
+        'kn': kannada_translation
+    })
 
-@app.route('/speak', methods=['POST'])
-def speak():
-    data = request.json or {}
-    text = data.get('text', '')
-    lang = data.get('lang', 'en')
-    if not text or text == "...":
-        return jsonify({'status': 'empty'})
-    try:
-        tts = gTTS(text=text, lang=lang)
-        os.makedirs("static", exist_ok=True)
-        tts.save("static/speech.mp3")
-        return jsonify({'status': 'success', 'audio_url': '/static/speech.mp3'})
-    except Exception as e:
+# Action endpoints for word modifications remain here
+@app.route('/action/delete_word', methods=['POST'])
+def delete_word():
+    global final_sentence
+    if final_sentence:
+        final_sentence.pop()
+        threading.Thread(target=trigger_sentence_translation, daemon=True).start()
+    return jsonify({'status': 'success'})
+
+@app.route('/action/clear_all', methods=['POST'])
+def clear_all():
+    global final_sentence, current_word, hindi_translation, kannada_translation
+    final_sentence = []
+    current_word = ""
+    hindi_translation = ""
+    kannada_translation = ""
+    return jsonify({'status': 'success'})
+
+@atexit.register
+def release_camera_on_exit():
+    if 'cam' in globals():
+        cam.release()
+    cv2.destroyAllWindows()
+    print("Webcam hardware and window contexts successfully released.")
+
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=False)
-
+    app.run(debug=False, threaded=True, port=5001)
