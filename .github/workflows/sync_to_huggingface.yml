@@ -17,4 +17,9 @@ jobs:
       - name: Push to Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://jvp07-star:$HF_TOKEN@huggingface.co/spaces/jvp07-star/mudravoice main
+        run: |
+          git rm --cached hand_landmarker.task isl_skeleton_model.h5 || true
+          git commit -m "Exclude binary models from sync" || true
+          git push --force https://jvp07-star:$HF_TOKEN@huggingface.co/spaces/jvp07-star/mudravoice main
+
+        
