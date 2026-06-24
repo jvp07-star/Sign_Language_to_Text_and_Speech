@@ -2,7 +2,7 @@ name: Sync to Hugging Face Spaces
 
 on:
   push:
-    branches: [main] # Change this to master if your default branch is master
+    branches: [main]
 
 jobs:
   sync-to-hub:
@@ -12,14 +12,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Push to Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git rm --cached hand_landmarker.task isl_skeleton_model.h5 || true
-          git commit -m "Exclude binary models from sync" || true
+          # 1. Set a dummy identity so git doesn't crash
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+          # 2. Force untrack and delete the model files from this sync run
+          git rm --cached hand_landmarker.task || true
+          git rm --cached isl_skeleton_model.h5 || true
+          
+          # 3. Commit this change locally on the runner
+          git commit -m "Remove large files from deployment sync" || true
+          
+          # 4. Push only the light web code to Hugging Face
           git push --force https://jvp07-star:$HF_TOKEN@huggingface.co/spaces/jvp07-star/mudravoice main
-
-        
