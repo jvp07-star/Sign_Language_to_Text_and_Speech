@@ -1,18 +1,17 @@
+import atexit
+import os
+import threading
+import time
+
 import cv2
 import mediapipe as mp
 import numpy as np
-import os
-
-import request
-import tensorflow as tf
-import threading
-import time
-import atexit
 import pyttsx3
-from spellchecker import SpellChecker
+import tensorflow as tf
 from deep_translator import GoogleTranslator
-from gtts import gTTS
 from flask import Flask, render_template, Response, jsonify
+from gtts import gTTS
+from spellchecker import SpellChecker
 
 from processor import get_hand_skeleton
 
