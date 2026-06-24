@@ -248,4 +248,4 @@ def release_camera_on_exit():
 
 
 if __name__ == '__main__':
-    app.run(debug=False, threaded=True, port=5001)
+    app.run(debug=False, threaded=True, port=7860)
