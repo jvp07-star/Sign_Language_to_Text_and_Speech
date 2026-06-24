@@ -186,7 +186,7 @@
     <div class="main-container">
         <div class="card">
             <div class="video-wrapper">
-                <img id="webcam" src="/video_feed">
+                <video id="webcam" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover;"></video>
             </div>
         </div>
 
@@ -233,6 +233,22 @@
     </div>
 
     <script>
+        // Request local webcam access in the user's browser
+        const videoElement = document.getElementById('webcam');
+
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(function(stream) {
+                    videoElement.srcObject = stream;
+                })
+                .catch(function(error) {
+                    console.error("Webcam access denied or unavailable: ", error);
+                    alert("Please allow camera permissions to use this sign language translator.");
+                });
+        } else {
+            alert("Your browser does not support webcam access.");
+        }
+
         // Fetch updates from background loop pipeline every 400ms
     setInterval(fetchData, 400);
 
